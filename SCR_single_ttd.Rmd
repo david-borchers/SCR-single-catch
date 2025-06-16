@@ -1,0 +1,214 @@
+---
+title: "Single-catch SCR with Times"
+author: "David Borchers"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Summary
+
+Simulations to check the veracity of the new MLE Ben and I came up with.
+
+# The negative log-likelihood
+
+```{r llik}
+negll = function(pars,adists,meshdists,capthist,surveyT) {
+  nocc = dim(capthist)[3]
+  ntraps = dim(capthist)[2]
+  n = dim(capthist)[1]
+  for(j in 1:nocc) {
+    
+  }
+}
+```
+
+# Simulations
+
+Let $\mathbf{s}=(x,y)$ be a generic activity centre location, and $\lambda(d) = \lambda_0\frac{-d^2}{2\sigma^2} = \lambda_0\frac{-(x^2+y^2)}{2\sigma^2}$ be the hazard function evaluated at distance $d=\sqrt{x^2+y^2}$ from the activity centre, where $\lambda_0$ and $\sigma$ are the hazard function parameters.
+
+We have $N$ activity centres, in a region of area $A$ that includes the trap array at its centre.
+
+We assume that the times to detection of animal $i$ at trap $k$ is an exponential random variable with expectation $\lambda(d_{ik})^{-1}$, where $d_{ik}$ is the distanse from $i$'s activity centre (AC) to trap $k$.
+
+
+```{r simSCR.fixedN, echo=FALSE, message=FALSE, warning=FALSE}
+# Function to simulate fist detection times (and animals) at each trap:
+simSCR.fixedN.single = function(locs, sigma = 0.5, lambda0 = 0.5, noccasions=1, traps, surveyT)
+{
+  if(dim(locs)[1]==0) stop("N==0")
+  if(dim(locs)[2]!=2) stop("locs is of wrong dimension")
+  N = dim(locs)[1]
+  K <- nrow(traps)
+  capthists <- list()
+  ids <- NULL
+  for(occ in 1:noccasions) {
+    capthist = NULL
+    for(i in 1:N) {
+      d2 <- (locs[i,1] - traps[,1])^2 + (locs[i,2] - traps[,2])^2
+      haz <- lambda0*exp(-d2/(2*sigma^2))
+      times <- rexp(K, haz)
+      capthist <- rbind(capthist, times)
+    }
+    capthists[[occ]] = make.single(capthist,surveyT)
+  }
+  
+  chist = compress.capthist.list(capthists,K) # turn into n x K x noccasions array with capture times
+  
+  if(!is.null(chist)) {
+    return(chist)
+  }else {
+    return(NULL)
+  }
+ 
+#  if(!is.null(capthists)) {
+#    return(capthists)
+#  }else {
+#    return(NULL)
+#  }
+
+}
+
+make.single = function(carray,surveyT) {
+# Takes array 'carray'of capture times of all animals (rows) on all traps (cols) and turns it into
+# an array with columns 'animal', 'trap' and 'time' consistent with traps being single-catch traps
+  chist = NULL
+  nextime = 0
+  tarray = carray
+  while(nextime<surveyT) {
+    ind = which(tarray==min(tarray),arr.ind = TRUE) # next trap and animal
+    captime = tarray[ind[1],ind[2]] # capture time
+    if(captime<surveyT) {
+      chist = rbind(chist,c(ind[1],ind[2],captime)) # put new capthist with existing ones
+      tarray[ind[1],] = surveyT + 1 # remove this animal by making all capture times larger than survey time
+      tarray[,ind[2]] = surveyT + 1 # remove this trap by making all capture times larger than survey time
+    }else {
+      nextime = Inf
+    }
+  }
+  colnames(chist) = c("animal","trap","time")
+  return(chist)
+}
+
+compress.capthist.list = function(capthist.list,ntraps) {
+# converts a list of capture times of animals on each occasion, into a 3D array with dimensions n x K x noccasions,
+# with zeros when animal i was not detected by trap k on occasion j.
+  J = length(capthist.list)
+  animals = NULL
+  for(j in 1:J) animals = c(animals,capthist.list[[j]][,1]) # concatenate animals across occasions
+  animals = sort(unique(animals)) # get unique animals across occasions
+  n = length(animals) # number of animals
+  # set up 3D array for capture times on all occasions:
+  chist = array(rep(0,n*ntraps*J), dim=c(n,ntraps,J), dimnames=list(animal=1:n,trap=1:ntraps,occasion=1:J))
+  for(j in 1:J) { # loop through occasions
+    for(i in 1:n) { # loop through animals within occasions
+      row = which(capthist.list[[j]][,1]==animals[i]) # find row animal i appears in (or NULL if not there)
+      if(!is.null(row)) trap = capthist.list[[j]][row,2] # find trap animal was caught in, if there
+      chist[i,trap,j] = capthist.list[[j]][row,3] # record capture time
+    }
+  }
+  row.names(chist) = animals # put original animal number in as row name
+  return(chist)
+}
+```
+
+Set up simulation sceanrio and parameters:
+
+```{r simsetup, message=FALSE}
+library(secr)
+
+sigma <- 0.5
+s2 = sigma^2
+l0 = lambda <- 6
+
+traps <- expand.grid(x = 1:5,y = 1:5)
+buffer = 3*sigma
+xlim <- range(traps[,1]) + c(-buffer, buffer)
+ylim <- range(traps[,2]) + c(-buffer, buffer)
+a = 0.25^2
+mask <- expand.grid(x = seq(xlim[1], xlim[2], sqrt(a)), y = seq(ylim[1], ylim[2], sqrt(a))  )
+nmask <- nrow(mask)
+J <- nrow(traps)
+# Turn traps and mask into secr objects because the function I have for covariance 
+# assumes that they are. Should no doubt change this in due course ...
+simtraps = read.traps(data=traps, type="proximity")
+
+trapdists = edist(simtraps,simtraps) # distance between traps
+
+area <- nrow(mask) * a
+targetD = 0.5
+D = round(targetD*area)/area # to get integer N
+N = D*area
+
+surveyT = 1 # duration of each survey occasion
+
+noccasions = 4 # number of survey occasion 
+
+pars = log(c(D=D, lambda0=lambda, sigmasq=sigma^2))
+```
+
+So the key parameter values are as follows:
+
+* $\sigma = `r sigma`$
+* $\lambda0 = `r l0`$
+* $A = `r area`$
+* $N = `r N`$
+* buffer = `r buffer`
+
+Let's take a look at the traps:
+```{r traplot}
+ntraps = dim(traps)[1]
+trapno = 1:ntraps
+plot(simtraps$x,simtraps$y,col=0,
+     xlim=c(min(simtraps$x)-buffer,max(simtraps$x)+buffer),
+     ylim=c(min(simtraps$y)-buffer,max(simtraps$y)+buffer),
+     xlab="",ylab="",main="Traps",cex.main=0.75)
+text(simtraps$x,simtraps$y,labels=trapno,cex=0.5)
+```
+
+Now try simulate a survey in which N is fixed and initial locations are random but then remain fixed for repeat survey occasions. 
+
+Simulate surveys and keep counts in a list of length `r noccasions`, with each element being an array of dimension (`r N` x `r ntraps`).
+```{r dosims, cache=FALSE}
+set.seed(123)
+# Do survey
+  # Simulate animal locations once:
+  locs <- cbind(x = runif(N, xlim[1], xlim[2]), 
+                y = runif(N, ylim[1], ylim[2])) # animal locations
+  # Simulate noccasions sets of capture times from these locations
+  capthist = simSCR.fixedN.single(locs, sigma, lambda, noccasions=noccasions, traps, surveyT=1)
+```
+
+Plot animals and traps, showing which were detected
+```{r plotpopcap, fig.dim=c(8,9)}
+caught.by.occasion = apply(capthist,c(1,3),sum)>0 # logical array indicating which animals (row) 
+                                                  # were caught on each occasion (column)
+caught.animals = as.integer(row.names(capthist)) # population number of detected animals
+par(mfrow=c(2,2))
+for(occ in 1:noccasions) {
+  trapind = which(capthist[caught.by.occasion[,occ],,occ]>0,arr.ind = TRUE)
+  trapind = trapind[order(trapind[,1]),]
+  plot(simtraps$x,simtraps$y,col=0,
+       xlim=c(min(simtraps$x)-buffer,max(simtraps$x)+buffer),
+       ylim=c(min(simtraps$y)-buffer,max(simtraps$y)+buffer),
+     xlab="",ylab="",main=paste("Occasion",occ),cex.main=0.75)
+  text(simtraps$x,simtraps$y,labels=trapno,cex=0.5)
+  text(locs[,1],locs[,2],labels=1:N,cex=0.5,col="red") # plot all animals
+  points(locs[caught.animals,1][caught.by.occasion[,occ]], # plot animals caught on the occasion
+         locs[caught.animals,2][caught.by.occasion[,occ]],col="red",cex=1.5)
+  text(simtraps$x,simtraps$y,labels=trapno,cex=0.5)
+  segments(locs[caught.animals,1][caught.by.occasion[,occ]],
+           locs[caught.animals,2][caught.by.occasion[,occ]],
+           simtraps$x[trapind[,2]], simtraps$y[trapind[,2]],
+           col="gray")
+}
+```
+
+Here are the first 10 rows of the capture history array:
+```{r chist}
+capthist[1:10,,]
+```
+
